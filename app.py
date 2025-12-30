@@ -7,6 +7,7 @@ from typing import Optional
 st.set_page_config(page_title="Profit Simulator v1.3.1", layout="wide")
 st.title("이익 시뮬레이터 v1.3.1")
 st.caption("※ ₩ 기준(원화). 가격/목표매출/대출액 입력은 150,000 처럼 콤마 포함 가능")
+st.caption("입력 후 Enter(또는 입력칸 밖 클릭) 시 값이 확정되어 화면에 반영됩니다. 환경에 따라 확정이 한 번 더 필요해 보일 수 있습니다.")
 
 MONTHS = [f"{i}월" for i in range(1, 13)]
 
@@ -69,6 +70,22 @@ def currency_input(label: str, key: str, default: float = 0.0, help_text: Option
     # sidebar에도 caption이 있어서 그대로 사용 가능
     container.caption(f"→ ₩ {val:,.0f}")
     return val
+
+def qty_input(label: str, key: str, default: float = 0.0, help_text: Optional[str] = None, container=None) -> float:
+    """
+    Quantity input that accepts commas and shows normalized formatting immediately.
+    """
+    if container is None:
+        container = st
+
+    raw_key = f"{key}_raw"
+    if raw_key not in st.session_state:
+        st.session_state[raw_key] = f"{default:,.0f}"
+
+    raw = container.text_input(label, key=raw_key, help=help_text, placeholder="예: 120,000")
+    val = parse_currency(raw)
+    container.caption(f"→ {val:,.0f} 개")
+    return float(val)
 
 # -----------------------------
 # Defaults
@@ -139,7 +156,7 @@ monthly_mode = st.sidebar.radio(
     key="monthly_mode"
 )
 
-jan_units = st.sidebar.number_input("1월 기준 수량", value=1000.0, step=100.0, key="jan_units")
+jan_units = qty_input("1월 기준 수량(개)", key="jan_units", default=1000, help_text="예: 120,000", container=st.sidebar)
 
 autogen_mode = None
 uniform_mom = 0.0
@@ -336,7 +353,8 @@ pnl = pd.DataFrame(pnl_items).T
 pnl = pnl.reindex(columns=MONTHS)
 pnl["Total"] = pnl.sum(axis=1)
 
-st.dataframe(pnl.style.format(lambda v: fmt_won(v)), use_container_width=True)
+pnl_display = pnl.applymap(lambda v: fmt_won(v))
+st.dataframe(pnl_display, use_container_width=True)
 
 # -----------------------------
 # 6) Target revenue -> required units (annual)
@@ -374,11 +392,10 @@ if target_revenue and target_revenue > 0:
         with st.expander("월별 필요한 판매량(총/케이스/텀블러)", expanded=True):
             show = req_monthly_total[["Month", "Req_TotalUnits", "Req_CaseUnits", "Req_TumblerUnits"]].copy()
             show.columns = ["Month", "TotalUnits(필요)", "CaseUnits(필요)", "TumblerUnits(필요)"]
-            st.dataframe(show.style.format({
-                "TotalUnits(필요)":"{:.0f}",
-                "CaseUnits(필요)":"{:.0f}",
-                "TumblerUnits(필요)":"{:.0f}",
-            }), use_container_width=True)
+            show_fmt = show.copy()
+            for col in ["TotalUnits(필요)", "CaseUnits(필요)", "TumblerUnits(필요)"]:
+                show_fmt[col] = pd.to_numeric(show_fmt[col], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
+            st.dataframe(show_fmt, use_container_width=True)
 
         detail_req = detail.copy()
         detail_req["Units_req"] = detail_req["Units"] * scale
@@ -390,10 +407,10 @@ if target_revenue and target_revenue > 0:
         )
 
         with st.expander("제품별 연간 필요 판매량(현재 믹스/비중 유지 가정)", expanded=False):
-            st.dataframe(prod_year_req.style.format({
-                "AnnualUnitsRequired":"{:.0f}",
-                "AnnualRevenueRequired":"{:,.0f}",
-            }), use_container_width=True)
+            prod_year_req_fmt = prod_year_req.copy()
+            prod_year_req_fmt["AnnualUnitsRequired"] = pd.to_numeric(prod_year_req_fmt["AnnualUnitsRequired"], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
+            prod_year_req_fmt["AnnualRevenueRequired"] = pd.to_numeric(prod_year_req_fmt["AnnualRevenueRequired"], errors="coerce").fillna(0).map(lambda x: fmt_won(x))
+            st.dataframe(prod_year_req_fmt, use_container_width=True)
 else:
     st.caption("목표 연 매출(₩)을 입력하면, 현재 가격/분배를 유지한다는 가정 하에 필요한 판매량을 자동 계산합니다.")
 
@@ -402,10 +419,16 @@ else:
 # -----------------------------
 with st.expander("추가 확인용(월별 총/케이스/텀블러 수량, 제품별 상세)", expanded=False):
     st.markdown("**월별 총/케이스/텀블러 수량**")
-    st.dataframe(monthly_total.style.format({"TotalUnits":"{:.0f}","CaseUnits":"{:.0f}","TumblerUnits":"{:.0f}"}), use_container_width=True)
+    monthly_total_fmt = monthly_total.copy()
+    for col in ["TotalUnits", "CaseUnits", "TumblerUnits"]:
+        monthly_total_fmt[col] = pd.to_numeric(monthly_total_fmt[col], errors="coerce").fillna(0).map(lambda x: f"{x:,.0f}")
+    st.dataframe(monthly_total_fmt, use_container_width=True)
 
     st.markdown("**제품별 월별 상세(수량/매출)**")
     show_detail = detail.copy()
     show_detail["Revenue(₩)"] = show_detail["Revenue"]
     show_detail = show_detail.drop(columns=["Revenue"])
-    st.dataframe(show_detail.style.format({"Units":"{:.2f}","Revenue(₩)":"{:,.0f}"}), use_container_width=True)
+    show_detail_fmt = show_detail.copy()
+    show_detail_fmt["Units"] = pd.to_numeric(show_detail_fmt["Units"], errors="coerce").fillna(0).map(lambda x: f"{x:,.2f}")
+    show_detail_fmt["Revenue(₩)"] = pd.to_numeric(show_detail_fmt["Revenue(₩)"], errors="coerce").fillna(0).map(lambda x: fmt_won(x))
+    st.dataframe(show_detail_fmt, use_container_width=True)
