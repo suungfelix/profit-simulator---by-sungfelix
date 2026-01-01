@@ -4,8 +4,8 @@ import numpy as np
 import re
 from typing import Optional
 
-st.set_page_config(page_title="Profit Simulator v1.3.1", layout="wide")
-st.title("이익 시뮬레이터 v1.3.1")
+st.set_page_config(page_title="Profit Simulator v1.3.2", layout="wide")
+st.title("이익 시뮬레이터 v1.3.2")
 st.caption("※ ₩ 기준(원화). 가격/목표매출/대출액 입력은 150,000 처럼 콤마 포함 가능")
 st.caption("입력 후 Enter(또는 입력칸 밖 클릭) 시 값이 확정되어 화면에 반영됩니다. 환경에 따라 확정이 한 번 더 필요해 보일 수 있습니다.")
 
@@ -87,20 +87,50 @@ def qty_input(label: str, key: str, default: float = 0.0, help_text: Optional[st
     container.caption(f"→ {val:,.0f} 개")
     return float(val)
 
+
 # -----------------------------
 # Defaults
 # -----------------------------
 if "products" not in st.session_state:
     st.session_state.products = pd.DataFrame([
-        {"Category": "케이스", "Product": "케이스 A", "Price(₩)": "0", "WeightInCategory": 30.0},
-        {"Category": "케이스", "Product": "케이스 B", "Price(₩)": "0", "WeightInCategory": 40.0},
-        {"Category": "케이스", "Product": "케이스 C", "Price(₩)": "0", "WeightInCategory": 20.0},
-        {"Category": "케이스", "Product": "케이스 D", "Price(₩)": "0", "WeightInCategory": 10.0},
-        {"Category": "텀블러", "Product": "텀블러 A", "Price(₩)": "0", "WeightInCategory": 30.0},
-        {"Category": "텀블러", "Product": "텀블러 B", "Price(₩)": "0", "WeightInCategory": 40.0},
-        {"Category": "텀블러", "Product": "텀블러 C", "Price(₩)": "0", "WeightInCategory": 20.0},
-        {"Category": "텀블러", "Product": "텀블러 D", "Price(₩)": "0", "WeightInCategory": 10.0},
+        {"Category": "케이스", "Code": "A", "Name": "케이스 A", "Price(₩)": 150000.0, "WeightInCategory": 30.0},
+        {"Category": "케이스", "Code": "B", "Name": "케이스 B", "Price(₩)": 160000.0, "WeightInCategory": 40.0},
+        {"Category": "케이스", "Code": "C", "Name": "케이스 C", "Price(₩)": 170000.0, "WeightInCategory": 30.0},
+        {"Category": "케이스", "Code": "D", "Name": "케이스 D", "Price(₩)": 0.0,      "WeightInCategory": 0.0},
+        {"Category": "텀블러", "Code": "A", "Name": "텀블러 A", "Price(₩)": 50000.0,  "WeightInCategory": 30.0},
+        {"Category": "텀블러", "Code": "B", "Name": "텀블러 B", "Price(₩)": 60000.0,  "WeightInCategory": 40.0},
+        {"Category": "텀블러", "Code": "C", "Name": "텀블러 C", "Price(₩)": 80000.0,  "WeightInCategory": 30.0},
+        {"Category": "텀블러", "Code": "D", "Name": "텀블러 D", "Price(₩)": 0.0,      "WeightInCategory": 0.0},
     ])
+
+# Backward compatibility: older versions used Product instead of (Code, Name)
+if "Code" not in st.session_state.products.columns or "Name" not in st.session_state.products.columns:
+    df_old = st.session_state.products.copy()
+    # Ensure required columns exist
+    for _c, _default in [("Category", ""), ("Product", ""), ("Price(₩)", 0.0), ("WeightInCategory", 0.0)]:
+        if _c not in df_old.columns:
+            df_old[_c] = _default
+
+    rebuilt = []
+    for cat in ["케이스", "텀블러"]:
+        sub = df_old[df_old["Category"] == cat].copy().reset_index(drop=True)
+        # Assign codes in order for existing rows (up to 4)
+        codes = ["A", "B", "C", "D"]
+        for i, code in enumerate(codes):
+            if i < len(sub):
+                name = str(sub.loc[i, "Product"]) if str(sub.loc[i, "Product"]).strip() else f"{cat} {code}"
+                price = float(pd.to_numeric(sub.loc[i, "Price(₩)"], errors="coerce")) if pd.notna(sub.loc[i, "Price(₩)"]) else 0.0
+                weight = float(pd.to_numeric(sub.loc[i, "WeightInCategory"], errors="coerce")) if pd.notna(sub.loc[i, "WeightInCategory"]) else 0.0
+            else:
+                name, price, weight = f"{cat} {code}", 0.0, 0.0
+            rebuilt.append({"Category": cat, "Code": code, "Name": name, "Price(₩)": price if not np.isnan(price) else 0.0, "WeightInCategory": weight if not np.isnan(weight) else 0.0})
+
+    st.session_state.products = pd.DataFrame(rebuilt)
+
+# Ensure required columns exist (safe guard)
+for _c, _default in [("Category", ""), ("Code", ""), ("Name", ""), ("Price(₩)", 0.0), ("WeightInCategory", 0.0)]:
+    if _c not in st.session_state.products.columns:
+        st.session_state.products[_c] = _default
 
 ensure_month_table("monthly_total_units", "TotalUnits", 1000.0)
 ensure_month_table("monthly_case_units", "CaseUnits", 700.0)
@@ -112,27 +142,77 @@ if "monthly_mom_growth" not in st.session_state:
     })
 
 # -----------------------------
-# 1) Product editor
+# 1) Product editor (no typing for price/weight)
 # -----------------------------
-st.subheader("1) 제품 설정 (이름/가격/비율/추가/삭제 가능)")
+st.subheader("1) 제품 설정 (이름/가격/비율)")
+st.caption("가격은 5,000원 단위, 비중은 1 단위로 조정됩니다. (Weight는 자동 정규화되어 분배에 사용)")
 
-products = st.data_editor(
-    st.session_state.products,
-    num_rows="dynamic",
-    use_container_width=True,
-    key="products_editor",
-    column_config={
-        "Category": st.column_config.SelectboxColumn(options=["케이스", "텀블러"]),
-        "Price(₩)": st.column_config.TextColumn(help="예: 150,000 또는 150000"),
-        "WeightInCategory": st.column_config.NumberColumn(help="카테고리 내 비율(가중치). 합이 100일 필요 없음", format="%.2f"),
-    },
-)
-for c in ["Category", "Product", "Price(₩)", "WeightInCategory"]:
-    if c not in products.columns:
-        products[c] = ""
+base_products = st.session_state.products.copy()
+# Prevent duplicate (Category, Code) rows from accumulating across reruns
+if "Code" in base_products.columns:
+    base_products = base_products.drop_duplicates(subset=["Category", "Code"], keep="last")
+base_products["Price(₩)"] = pd.to_numeric(base_products["Price(₩)"], errors="coerce").fillna(0.0)
+base_products["WeightInCategory"] = pd.to_numeric(base_products["WeightInCategory"], errors="coerce").fillna(0.0)
+
+new_rows = []
+for cat in ["케이스", "텀블러"]:
+    st.markdown(f"### {cat}")
+
+    desired = ["A", "B", "C", "D"]
+    sub = base_products[base_products["Category"] == cat].copy()
+    sub = sub.drop_duplicates(subset=["Code"], keep="last")
+
+    # Ensure A/B/C/D rows exist by Code
+    for code in desired:
+        if (sub["Code"] == code).sum() == 0:
+            sub = pd.concat([sub, pd.DataFrame([{ "Category": cat, "Code": code, "Name": f"{cat} {code}", "Price(₩)": 0.0, "WeightInCategory": 0.0 }])], ignore_index=True)
+
+    # Sort in A,B,C,D order
+    sub["__order"] = sub["Code"].apply(lambda x: desired.index(x) if x in desired else 999)
+    sub = sub.sort_values("__order").drop(columns=["__order"]).reset_index(drop=True)
+
+    # Header
+    h1, h2, h3 = st.columns([3, 2, 2])
+    h1.markdown("**이름**")
+    h2.markdown("**가격(₩)**")
+    h3.markdown("**비중(Weight)**")
+
+    for _, r in sub.iterrows():
+        code = str(r["Code"])
+        c1, c2, c3 = st.columns([3, 2, 2])
+
+        # Name (editable)
+        name_key = f"name_{cat}_{code}"
+        default_name = str(r.get("Name", "")).strip() or f"{cat} {code}"
+        name_val = c1.text_input("", value=default_name, key=name_key)
+
+        # Price (spinner) - 5,000 step
+        price_key = f"price_{cat}_{code}"
+        price_val = c2.number_input("", value=float(r.get("Price(₩)", 0.0)), min_value=0.0, step=5000.0, key=price_key)
+        c2.caption(f"→ ₩ {price_val:,.0f}")
+
+        # Weight (spinner) - 1 step
+        w_key = f"weight_{cat}_{code}"
+        w_val = c3.number_input("", value=float(r.get("WeightInCategory", 0.0)), min_value=0.0, step=1.0, key=w_key)
+
+        new_rows.append({
+            "Category": cat,
+            "Code": code,
+            "Name": name_val,
+            "Price(₩)": float(price_val),
+            "WeightInCategory": float(w_val),
+        })
+
+products = pd.DataFrame(new_rows)
+# Enforce uniqueness and stable order
+products = products.drop_duplicates(subset=["Category", "Code"], keep="last")
+cat_order = pd.Categorical(products["Category"], categories=["케이스", "텀블러"], ordered=True)
+products["_cat_order"] = cat_order
+products["_code_order"] = products["Code"].apply(lambda x: ["A","B","C","D"].index(x) if x in ["A","B","C","D"] else 999)
+products = products.sort_values(["_cat_order", "_code_order"]).drop(columns=["_cat_order", "_code_order"]).reset_index(drop=True)
+products["Price(₩)"] = pd.to_numeric(products["Price(₩)"], errors="coerce").fillna(0.0)
 products["WeightInCategory"] = pd.to_numeric(products["WeightInCategory"], errors="coerce").fillna(0.0)
-products["PriceNum"] = products["Price(₩)"].apply(parse_currency)
-st.session_state.products = products.drop(columns=["PriceNum"], errors="ignore").copy()
+st.session_state.products = products.copy()
 
 # -----------------------------
 # Sidebar inputs (즉시 반영)
@@ -178,6 +258,12 @@ lid_cost = st.sidebar.number_input("증지/종지(?) 개당 비용(원)", value=
 
 use_cogs = st.sidebar.checkbox("COGS(매출%) 사용", value=False, key="use_cogs")
 cogs_pct = st.sidebar.number_input("COGS율(매출%)", value=30.0, step=1.0, key="cogs_pct") if use_cogs else 0.0
+
+use_sga = st.sidebar.checkbox("SG&A(매출%) 사용", value=False, key="use_sga")
+sga_pct = 0.0
+if use_sga:
+    sga_pct = st.sidebar.number_input("SG&A율(매출%)", value=0.0, step=0.5, key="sga_pct")
+    st.sidebar.caption(f"→ 매출의 {sga_pct:.2f}%")
 
 use_interest = st.sidebar.checkbox("이자비용 사용", value=False, key="use_interest")
 loan_amount = currency_input("총 대출액(₩)", key="loan_amount", default=0, help_text="예: 100,000,000", container=st.sidebar) if use_interest else 0.0
@@ -299,7 +385,7 @@ for _, mrow in monthly_total.iterrows():
         rows.append({
             "Month": m,
             "Category": cat,
-            "Product": p["Product"],
+            "Product": p["Name"],
             "Units": units,
             "Price(₩)": p["Price(₩)"],
             "Revenue": revenue
@@ -321,13 +407,15 @@ cogs_rate = float(cogs_pct)/100.0 if use_cogs else 0.0
 monthly["Royalty"] = monthly["Revenue"] * royalty_rate
 monthly["LidCost"] = monthly["TotalUnits"] * float(lid_cost)
 monthly["COGS"] = monthly["Revenue"] * cogs_rate if use_cogs else 0.0
+sga_rate = float(sga_pct) / 100.0 if use_sga else 0.0
+monthly["SGA"] = monthly["Revenue"] * sga_rate if use_sga else 0.0
 
 monthly_interest = 0.0
 if use_interest:
     monthly_interest = float(loan_amount) * (float(annual_rate_pct)/100.0) / 12.0
 monthly["Interest"] = monthly_interest
 
-monthly["TotalCost"] = monthly["Royalty"] + monthly["LidCost"] + monthly["COGS"] + monthly["Interest"]
+monthly["TotalCost"] = monthly["Royalty"] + monthly["LidCost"] + monthly["COGS"] + monthly["SGA"] + monthly["Interest"]
 monthly["OperatingProfit"] = monthly["Revenue"] - monthly["TotalCost"]
 
 # -----------------------------
@@ -343,6 +431,8 @@ pnl_items = {
 }
 if use_cogs:
     pnl_items["COGS"] = midx["COGS"]
+if use_sga:
+    pnl_items["SG&A"] = midx["SGA"]
 if use_interest:
     pnl_items["이자비용(Interest)"] = midx["Interest"]
 
